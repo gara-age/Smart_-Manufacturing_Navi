@@ -1,11 +1,21 @@
 #include <ESP8266WiFi.h>
+#include <ESP8266WiFiMulti.h>
 #include <ESP8266WebServer.h>
 #include <WebSocketsClient.h>
 
-// Replace every YOUR_* value before uploading. Do not commit real keys.
-const char* WIFI_SSID = "kenta";
-const char* WIFI_PASSWORD = "00001111";
-const char* SERVER_HOST = "172.20.10.13";
+ESP8266WiFiMulti wifiMulti;
+
+// Wi-Fi Candidates (2개의 후보 중 연결 가능한 AP 자동 접속)
+const char* WIFI_SSID_1 = "kenta";
+const char* WIFI_PASSWORD_1 = "00001111";
+const char* SERVER_HOST_1 = "172.20.10.13";
+
+const char* WIFI_SSID_2 = "LLim";
+const char* WIFI_PASSWORD_2 = "limche123";
+const char* SERVER_HOST_2 = "172.21.134.80";
+
+const char* SERVER_HOST = SERVER_HOST_1;
+String serverHost = SERVER_HOST_1;
 const uint16_t SERVER_PORT = 8000;
 const char* PROVISIONING_KEY = "planner-device-provisioning-key";
 const char* CONTROL_KEY = "planner-device-control-key";
@@ -331,14 +341,14 @@ void controlEvent(WStype_t type, uint8_t* payload, size_t length) {
 
 void startProvisioning() {
   String path = "/ws/devices/connect?provisioning_key=" + String(PROVISIONING_KEY);
-  provisioningWs.begin(SERVER_HOST, SERVER_PORT, path.c_str());
+  provisioningWs.begin(serverHost.c_str(), SERVER_PORT, path.c_str());
   provisioningWs.onEvent(provisioningEvent);
   provisioningWs.setReconnectInterval(5000);
 }
 
 void startControl() {
   String path = "/ws/boards/" + deviceId + "?control_key=" + String(CONTROL_KEY);
-  controlWs.begin(SERVER_HOST, SERVER_PORT, path.c_str());
+  controlWs.begin(serverHost.c_str(), SERVER_PORT, path.c_str());
   controlWs.onEvent(controlEvent);
   controlWs.setReconnectInterval(5000);
   controlStarted = true;
@@ -350,19 +360,32 @@ void setup() {
   delay(300);
   debugLog("ESP_BOOT");
   WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  while (WiFi.status() != WL_CONNECTED) delay(500);
+  wifiMulti.addAP(WIFI_SSID_1, WIFI_PASSWORD_1);
+  wifiMulti.addAP(WIFI_SSID_2, WIFI_PASSWORD_2);
+  debugLog("WIFI_CONNECTING");
+  while (wifiMulti.run() != WL_CONNECTED) delay(500);
   deviceId = makeDeviceId(WiFi.macAddress());
   String localIp = WiFi.localIP().toString();
+  if (WiFi.SSID() == WIFI_SSID_2) {
+    serverHost = SERVER_HOST_2;
+  } else {
+    serverHost = SERVER_HOST_1;
+  }
   debugLog("WIFI_CONNECTED");
+  debugLog("WIFI_SSID=" + WiFi.SSID());
   debugLog("WIFI_IP=" + localIp);
   debugLog("DEVICE_ID=" + deviceId);
+  debugLog("SERVER_HOST=" + serverHost);
   registerHttpRoutes();
   startProvisioning();
 }
 
 void loop() {
   server.handleClient();
+  if (wifiMulti.run() != WL_CONNECTED) {
+    delay(10);
+    return;
+  }
   if (!provisioningComplete) provisioningWs.loop();
   if (startControlRequested) {
     startControlRequested = false;
