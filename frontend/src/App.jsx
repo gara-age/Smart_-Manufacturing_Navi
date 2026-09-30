@@ -56,6 +56,8 @@ const DEVICE_DEFS = {
   },
 };
 
+const IS_DEMO_MODE = import.meta.env.VITE_DEMO_MODE === 'true';
+
 function blankState(device) {
   return {
     connected: false,
@@ -207,7 +209,7 @@ function parseControlRequest(text) {
   return null;
 }
 
-function Chatbot({ devices, states }) {
+function Chatbot({ devices, states, demoMode = false }) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState('');
   const [isSending, setIsSending] = useState(false);
@@ -228,6 +230,7 @@ function Chatbot({ devices, states }) {
   };
 
   const recordClientEvent = async (interactionType, message) => {
+    if (demoMode) return;
     try {
       await fetch(import.meta.env.VITE_AGENT_EVENT_ENDPOINT || '/planner-api/api/agent/events', {
         method: 'POST',
@@ -261,6 +264,11 @@ function Chatbot({ devices, states }) {
       setPendingAction(action);
       appendBotMessage(`${device.name}(장비 ID: ${device.id})의 ${action.description} 작업을 실행할까요?`, action);
       void recordClientEvent('CONTROL_CONFIRMATION_REQUESTED', text);
+      return;
+    }
+
+    if (demoMode) {
+      appendBotMessage('외부 공개용 UI 데모입니다. 실제 장비 조회와 LLM 응답은 현장 네트워크에서만 실행됩니다.');
       return;
     }
 
@@ -299,6 +307,11 @@ function Chatbot({ devices, states }) {
     if (!confirmed) {
       appendBotMessage(`${devices[action.deviceId].name} ${action.description} 작업을 취소했습니다.`);
       void recordClientEvent('CONTROL_CANCELLED', action.sourceText);
+      return;
+    }
+
+    if (demoMode) {
+      appendBotMessage(`${devices[action.deviceId].name} ${action.description} 요청을 데모 화면에서 확인했습니다. 실제 장비 제어는 현장 네트워크에서만 실행됩니다.`);
       return;
     }
 
@@ -379,7 +392,7 @@ function Chatbot({ devices, states }) {
   );
 }
 
-function DeviceCard({ device, state, onState, onLog }) {
+function DeviceCard({ device, state, onState, onLog, demoMode = false }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const speedTimer = useRef(null);
@@ -393,6 +406,12 @@ function DeviceCard({ device, state, onState, onLog }) {
   }, []);
 
   const run = async (path, patch = {}, label = path) => {
+    if (demoMode) {
+      onState(device.id, { ...patch, connected: true });
+      onLog(device.name, `${label} 데모 실행`, 'info');
+      return;
+    }
+
     if (!device.ip) {
       setError('AGV IP를 상단 설정에서 입력하세요.');
       return;
@@ -970,7 +989,7 @@ export default function App() {
           DEVICE_DEFS
         ).map((d) => [
           d.id,
-          blankState(d),
+          { ...blankState(d), connected: IS_DEMO_MODE },
         ])
       )
   );
@@ -980,7 +999,9 @@ export default function App() {
 
   const [message, setMessage] =
     useState(
-      '기존 3대 ESP IP는 등록되어 있습니다. AGV IP만 입력하면 됩니다.'
+      IS_DEMO_MODE
+        ? '외부 공개용 UI 데모 모드입니다. 실제 장비에는 연결하지 않습니다.'
+        : '기존 3대 ESP IP는 등록되어 있습니다. AGV IP만 입력하면 됩니다.'
     );
 
   const [logs, setLogs] =
@@ -1094,6 +1115,19 @@ export default function App() {
     command,
     running
   ) => {
+    if (IS_DEMO_MODE) {
+      commandableDevices.forEach((device) => {
+        patchState(device.id, {
+          connected: true,
+          running,
+          ...(device.kind === 'agv' ? { agvState: running ? 'MISSION' : 'STOPPED' } : {}),
+        });
+        addLog(device.name, `전체 ${command.toUpperCase()} 데모 실행`, 'info');
+      });
+      setMessage(`외부 UI 데모에서 ${commandableDevices.length}대 상태를 시뮬레이션했습니다.`);
+      return;
+    }
+
     setGlobalBusy(true);
 
     setMessage(
@@ -1167,6 +1201,14 @@ export default function App() {
   };
 
   const checkStatus = async () => {
+    if (IS_DEMO_MODE) {
+      Object.values(devices).forEach((device) => {
+        patchState(device.id, { connected: true });
+      });
+      setMessage('외부 공개용 UI 데모 모드입니다. 실제 장비 상태는 조회하지 않습니다.');
+      return;
+    }
+
     setGlobalBusy(true);
 
     setMessage(
@@ -1467,6 +1509,7 @@ export default function App() {
                 patchState
               }
               onLog={addLog}
+              demoMode={IS_DEMO_MODE}
             />
           ))}
         </section>
@@ -1476,7 +1519,7 @@ export default function App() {
         프로토타입용 소프트웨어 제어 화면입니다. 실제 산업용 비상정지는 별도의 하드웨어 안전회로가 필요합니다.
       </footer>
 
-      <Chatbot devices={devices} states={states} />
+      <Chatbot devices={devices} states={states} demoMode={IS_DEMO_MODE} />
 
     </main>
   );

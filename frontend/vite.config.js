@@ -6,6 +6,7 @@ export default defineConfig(({ mode }) => {
   const target = env.PLANNER_API_BASE_URL || 'http://localhost:8000';
 
   return {
+    base: env.VITE_BASE_PATH || '/',
     plugins: [react()],
     server: {
       proxy: {
