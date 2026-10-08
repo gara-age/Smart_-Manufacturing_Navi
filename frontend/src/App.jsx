@@ -327,7 +327,15 @@ function Chatbot({ devices, states, demoMode = false }) {
       return;
     }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          // Chrome and Edge apply supported processing before audio reaches STT.
+          noiseSuppression: true,
+          echoCancellation: true,
+          autoGainControl: true,
+          channelCount: 1,
+        },
+      });
       const recorder = new MediaRecorder(stream);
       audioChunksRef.current = [];
       recorder.ondataavailable = (event) => {
