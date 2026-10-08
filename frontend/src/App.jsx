@@ -232,6 +232,22 @@ function Chatbot({ devices, states, demoMode = false }) {
   const messageEndRef = useRef(null);
   const recorderRef = useRef(null);
   const audioChunksRef = useRef([]);
+  const audioContextRef = useRef(null);
+  const silenceIntervalRef = useRef(null);
+  const silenceStartedAtRef = useRef(null);
+  const recordingStartedAtRef = useRef(null);
+
+  const stopAudioAnalysis = () => {
+    if (silenceIntervalRef.current) {
+      window.clearInterval(silenceIntervalRef.current);
+      silenceIntervalRef.current = null;
+    }
+    silenceStartedAtRef.current = null;
+    if (audioContextRef.current) {
+      void audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+  };
 
   const speak = (text) => {
     if (!ttsEnabled || !('speechSynthesis' in window) || !text) return;
@@ -271,6 +287,7 @@ function Chatbot({ devices, states, demoMode = false }) {
 
   useEffect(() => () => {
     recorderRef.current?.stream?.getTracks().forEach((track) => track.stop());
+    stopAudioAnalysis();
   }, []);
 
   const transcribeRecording = async (blob) => {
@@ -317,12 +334,39 @@ function Chatbot({ devices, states, demoMode = false }) {
         if (event.data.size > 0) audioChunksRef.current.push(event.data);
       };
       recorder.onstop = () => {
+        stopAudioAnalysis();
         stream.getTracks().forEach((track) => track.stop());
         setIsRecording(false);
         const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType || 'audio/webm' });
         if (blob.size > 0) void transcribeRecording(blob);
       };
       recorderRef.current = recorder;
+      recordingStartedAtRef.current = Date.now();
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (AudioContextClass) {
+        const audioContext = new AudioContextClass();
+        const analyser = audioContext.createAnalyser();
+        analyser.fftSize = 1024;
+        audioContext.createMediaStreamSource(stream).connect(analyser);
+        audioContextRef.current = audioContext;
+        const samples = new Uint8Array(analyser.fftSize);
+        silenceIntervalRef.current = window.setInterval(() => {
+          const recorderIsActive = recorder.state === 'recording';
+          const recordingDuration = Date.now() - (recordingStartedAtRef.current || Date.now());
+          if (!recorderIsActive || recordingDuration < 5000) return;
+          analyser.getByteTimeDomainData(samples);
+          const rms = Math.sqrt(samples.reduce((sum, value) => {
+            const normalized = (value - 128) / 128;
+            return sum + normalized * normalized;
+          }, 0) / samples.length);
+          if (rms < 0.015) {
+            silenceStartedAtRef.current ||= Date.now();
+            if (Date.now() - silenceStartedAtRef.current >= 2000) recorder.stop();
+          } else {
+            silenceStartedAtRef.current = null;
+          }
+        }, 100);
+      }
       recorder.start();
       setChatError('');
       setIsRecording(true);
