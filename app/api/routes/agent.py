@@ -1,4 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException
+import os
+import tempfile
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from app.agent.device_read_tools import (
     DEVICE_COMMANDS_BY_TYPE,
     DeviceControlToolExecutor,
@@ -13,12 +17,14 @@ from app.api.dependent_manager import (
     verify_control_api_key,
 )
 from app.service.agentService import AgentService
+from app.service.audio_transcription_service import AudioTranscriptionService
 from app.domains.capability_management.application.capability_service import CapabilityManagementService
 from app.domains.control_contract.infrastructure.conveyor_repository import ConveyorRepository
 from app.infra.db.session import get_db
 from pydantic import BaseModel, Field
 
 router = APIRouter()
+audio_transcription_service = AudioTranscriptionService()
 
 
 class PlanRequest(BaseModel):
@@ -45,6 +51,14 @@ class ControlChatRequest(ReadChatRequest):
 class AgentInteractionEventRequest(BaseModel):
     interaction_type: str = Field(min_length=1, max_length=64)
     message: str = Field(min_length=1, max_length=4_000)
+
+
+class TranscriptionResponse(BaseModel):
+    text: str
+    raw_text: str
+    detected_language: str | None = None
+    language_probability: float | None = None
+    model: str
 
 
 READ_ONLY_AGENT_INSTRUCTIONS = """You are PlannerLLM, a read-only device assistant.
@@ -203,3 +217,41 @@ def record_agent_client_event(
     interaction = repository.create_agent_interaction(req.interaction_type, req.message)
     repository.complete_agent_interaction(interaction.id, status="COMPLETED")
     return {"id": interaction.id, "status": "COMPLETED"}
+
+
+@router.post(
+    "/api/agent/transcribe",
+    response_model=TranscriptionResponse,
+    dependencies=[Depends(verify_control_api_key)],
+)
+async def transcribe_voice(
+    audio: UploadFile = File(...),
+    language_hint: str = "ko",
+):
+    """Convert a browser-recorded microphone clip to text for the chat input."""
+    if not audio.content_type or not audio.content_type.startswith("audio/"):
+        raise HTTPException(status_code=415, detail="An audio file is required")
+
+    suffix = os.path.splitext(audio.filename or "recording.webm")[1] or ".webm"
+    temp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as temp_file:
+            temp_path = temp_file.name
+            temp_file.write(await audio.read())
+        result = audio_transcription_service.transcribe(
+            Path(temp_path), language_hint=language_hint,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Voice recognition failed: {exc}") from exc
+    finally:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
+
+    if not result["text"]:
+        raise HTTPException(status_code=422, detail="No speech was recognized")
+    return TranscriptionResponse(**result)

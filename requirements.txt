@@ -21,4 +21,9 @@ python-dotenv==1.0.1
 
 # Logging & utils
 orjson==3.10.1
+
+# Voice input (VisionNavi faster-whisper integration)
+faster-whisper==1.1.0
+python-multipart==0.0.9
+requests==2.34.2
 #pip install -r requirements.tx

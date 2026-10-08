@@ -1,14 +1,24 @@
 from collections.abc import Generator
 
 from sqlalchemy import create_engine
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.application_config import settings
 from app.infra.db.base import Base
 
 
-connect_args = {"check_same_thread": False} if settings.DATABASE_URL.startswith("sqlite") else {}
-engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True, connect_args=connect_args)
+def _resolve_database_url() -> str:
+    """Use a host override when the API runs natively rather than in Docker."""
+    if not settings.DATABASE_HOST_OVERRIDE:
+        return settings.DATABASE_URL
+    url = make_url(settings.DATABASE_URL)
+    return str(url.set(host=settings.DATABASE_HOST_OVERRIDE))
+
+
+DATABASE_URL = _resolve_database_url()
+connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, connect_args=connect_args)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
 

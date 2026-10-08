@@ -11,6 +11,7 @@ import {
   LayoutDashboard,
   LoaderCircle,
   MessageCircle,
+  Mic,
   PackageOpen,
   Play,
   RefreshCw,
@@ -20,6 +21,8 @@ import {
   SendHorizontal,
   SlidersHorizontal,
   Truck,
+  Volume2,
+  VolumeX,
   Wifi,
   WifiOff,
   X,
@@ -213,6 +216,9 @@ function Chatbot({ devices, states, demoMode = false }) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState('');
   const [isSending, setIsSending] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [ttsEnabled, setTtsEnabled] = useState(() => window.localStorage.getItem('manufacturing-tts-enabled') !== 'false');
   const [pendingAction, setPendingAction] = useState(null);
   const [chatError, setChatError] = useState('');
   const [messages, setMessages] = useState(() => {
@@ -224,9 +230,21 @@ function Chatbot({ devices, states, demoMode = false }) {
     }
   });
   const messageEndRef = useRef(null);
+  const recorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+
+  const speak = (text) => {
+    if (!ttsEnabled || !('speechSynthesis' in window) || !text) return;
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = 'ko-KR';
+    utterance.rate = 1;
+    window.speechSynthesis.speak(utterance);
+  };
 
   const appendBotMessage = (text, action = null) => {
     setMessages((prev) => [...prev, { id: `bot-${Date.now()}`, role: 'bot', text, time: formatTime(), action }]);
+    speak(text);
   };
 
   const recordClientEvent = async (interactionType, message) => {
@@ -246,6 +264,72 @@ function Chatbot({ devices, states, demoMode = false }) {
     window.localStorage.setItem('manufacturing-chat-history', JSON.stringify(messages));
     if (open) messageEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, open]);
+
+  useEffect(() => {
+    window.localStorage.setItem('manufacturing-tts-enabled', String(ttsEnabled));
+  }, [ttsEnabled]);
+
+  useEffect(() => () => {
+    recorderRef.current?.stream?.getTracks().forEach((track) => track.stop());
+  }, []);
+
+  const transcribeRecording = async (blob) => {
+    if (demoMode) {
+      setChatError('공개 데모에서는 음성 인식 서버를 사용할 수 없습니다. 현장 네트워크에서 테스트해 주세요.');
+      return;
+    }
+    setIsTranscribing(true);
+    setChatError('');
+    try {
+      const endpoint = import.meta.env.VITE_AGENT_TRANSCRIBE_ENDPOINT || '/planner-api/api/agent/transcribe';
+      const body = new FormData();
+      body.append('audio', blob, 'voice-command.webm');
+      body.append('language_hint', 'ko');
+      const response = await fetch(endpoint, { method: 'POST', body });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.text) throw new Error(data.detail || `HTTP_${response.status}`);
+      setDraft(data.text);
+    } catch (error) {
+      setChatError(
+        error.message?.includes('dependencies')
+          ? '음성 인식 모듈이 설치되지 않았습니다. 서버에서 pip install -r requirements.txt를 실행해 주세요.'
+          : '음성을 텍스트로 변환하지 못했습니다. 마이크 권한과 음성 인식 서버 상태를 확인해 주세요.'
+      );
+    } finally {
+      setIsTranscribing(false);
+    }
+  };
+
+  const toggleRecording = async () => {
+    if (isRecording) {
+      recorderRef.current?.stop();
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      setChatError('이 브라우저는 마이크 녹음을 지원하지 않습니다. Chrome 또는 Edge를 사용해 주세요.');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      audioChunksRef.current = [];
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) audioChunksRef.current.push(event.data);
+      };
+      recorder.onstop = () => {
+        stream.getTracks().forEach((track) => track.stop());
+        setIsRecording(false);
+        const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType || 'audio/webm' });
+        if (blob.size > 0) void transcribeRecording(blob);
+      };
+      recorderRef.current = recorder;
+      recorder.start();
+      setChatError('');
+      setIsRecording(true);
+    } catch {
+      setChatError('마이크 권한을 허용해야 음성 입력을 사용할 수 있습니다.');
+    }
+  };
 
   const sendMessage = async () => {
     const text = draft.trim();
@@ -349,6 +433,9 @@ function Chatbot({ devices, states, demoMode = false }) {
             <strong>AI 공정 어시스턴트</strong>
               <span><i /> LLM 연결 대기</span>
             </div>
+            <button className="chat-tts-toggle" type="button" onClick={() => setTtsEnabled((value) => !value)} aria-label={ttsEnabled ? '음성 응답 끄기' : '음성 응답 켜기'} title={ttsEnabled ? '음성 응답 켜짐' : '음성 응답 꺼짐'}>
+              {ttsEnabled ? <Volume2 size={17} /> : <VolumeX size={17} />}
+            </button>
             <button className="chat-close" onClick={() => setOpen(false)} aria-label="챗봇 닫기"><X size={19} /></button>
           </div>
           <div className="chat-context">
@@ -379,8 +466,11 @@ function Chatbot({ devices, states, demoMode = false }) {
             <button onClick={() => setDraft('AGV 설정 방법 알려줘')}>AGV 설정</button>
           </div>
           <form className="chat-composer" onSubmit={(event) => { event.preventDefault(); sendMessage(); }}>
-            <input value={draft} disabled={isSending} onChange={(event) => setDraft(event.target.value)} placeholder="공정에 대해 물어보세요" aria-label="챗봇 메시지" />
-            <button type="submit" disabled={isSending} aria-label="메시지 전송">{isSending ? <LoaderCircle className="spin" size={18} /> : <SendHorizontal size={18} />}</button>
+            <input value={draft} disabled={isSending || isTranscribing} onChange={(event) => setDraft(event.target.value)} placeholder={isRecording ? '듣고 있습니다. 다시 누르면 입력을 마칩니다.' : '공정에 대해 물어보세요'} aria-label="챗봇 메시지" />
+            <button className={`voice-button ${isRecording ? 'recording' : ''}`} type="button" disabled={isSending || isTranscribing} onClick={toggleRecording} aria-label={isRecording ? '음성 입력 종료' : '음성 입력 시작'} title={isRecording ? '녹음 종료' : '음성 입력'}>
+              {isTranscribing ? <LoaderCircle className="spin" size={18} /> : <Mic size={18} />}
+            </button>
+            <button type="submit" disabled={isSending || isTranscribing || !draft.trim()} aria-label="메시지 전송">{isSending ? <LoaderCircle className="spin" size={18} /> : <SendHorizontal size={18} />}</button>
           </form>
         </aside>
       )}
